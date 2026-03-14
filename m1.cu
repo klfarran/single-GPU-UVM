@@ -6,6 +6,8 @@
 #include <string>
 #include <cuda_runtime.h>
 #include <chrono>
+#include <nvtx3/nvToolsExt.h>
+#include <cuda_profiler_api.h>
 
 // -------------------------
 // CUDA error macro
@@ -137,10 +139,8 @@ int main() {
     init_random(B, (long long)K*N);
 
     // streams
-    cudaStream_t compute_stream;
-    cudaStream_t prefetch_stream;
+    cudaStream_t compute_stream;\
     CUDA_CHECK(cudaStreamCreate(&compute_stream));
-    CUDA_CHECK(cudaStreamCreate(&prefetch_stream));
 
     // kernel launch configuration
     dim3 block(TILE, TILE);
@@ -163,6 +163,7 @@ int main() {
     reset_system_state(dummy_buffer, L2_SIZE, A, B, C, sizeA, sizeB, sizeC); 
 
     // begin microbenchmark experiments 
+    CUDA_CHECK(cudaProfilerStart());
     cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
@@ -177,6 +178,7 @@ int main() {
     // flush L2 and force data back to CPU
     reset_system_state(dummy_buffer, L2_SIZE, A, B, C, sizeA, sizeB, sizeC);
 
+    nvtxRangePushA("M1: Demand Paging");
     CUDA_CHECK(cudaEventRecord(start, compute_stream));
 
     tiled_gemm_sm<<<grid, block, 0, compute_stream>>>(A, B, C, M, N, K);
@@ -188,73 +190,9 @@ int main() {
     CUDA_CHECK(cudaEventElapsedTime(&elapsed, start, stop));
     printf("M1 (Demand Paging- worst case) Kernel Time: %f ms\n", elapsed);
     CUDA_CHECK(cudaDeviceSynchronize());
+    nvtxRangePop();
 
-    // =========================
-    // M2: Ideal Prefetch 
-    // =========================
-    // BEST CASE 
-    // Same allocation, but cudaMemPrefetchAsync called on the entire buffer before the kernel launches on a separate stream
-
-    // flush L2 and force data back to CPU
-    reset_system_state(dummy_buffer, L2_SIZE, A, B, C, sizeA, sizeB, sizeC);
-
-    // prefetch to GPU 
-    CUDA_CHECK(cudaMemPrefetchAsync(A, sizeA, deviceId));
-    CUDA_CHECK(cudaMemPrefetchAsync(B, sizeB, deviceId));
-    CUDA_CHECK(cudaMemPrefetchAsync(C, sizeC, deviceId));
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    CUDA_CHECK(cudaEventRecord(start, compute_stream));
-
-    tiled_gemm_sm<<<grid, block, 0, compute_stream>>>(A, B, C, M, N, K);
-
-    CUDA_CHECK(cudaGetLastError());
-
-    CUDA_CHECK(cudaEventRecord(stop, compute_stream));
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    CUDA_CHECK(cudaEventElapsedTime(&elapsed, start, stop));
-    printf("M2 (Ideal Prefetch) Kernel Time: %f ms\n", elapsed);
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // =========================
-    // M3 : Overlapped Prefetch
-    // =========================
-    // REALISTIC CASE
-    // Issue cudaMemPrefetchAsync on a dedicated non-blocking prefetch stream, then immediately 
-    // launch the kernel on the compute stream without waiting for the prefetch to complete
-
-    // flush L2 and force data back to CPU
-    reset_system_state(dummy_buffer, L2_SIZE, A, B, C, sizeA, sizeB, sizeC);
-
-    cudaEvent_t prefetch_started;
-    CUDA_CHECK(cudaEventCreate(&prefetch_started));
-    
-    CUDA_CHECK(cudaEventRecord(start, compute_stream));
-
-    // launch prefetches on the nonblocking prefetch stream 
-    // question- do we need to time and then substract the prefetch overhead   
-    CUDA_CHECK(cudaMemPrefetchAsync(A, sizeA, deviceId, prefetch_stream));
-    CUDA_CHECK(cudaMemPrefetchAsync(B, sizeB, deviceId, prefetch_stream));
-    CUDA_CHECK(cudaMemPrefetchAsync(C, sizeC, deviceId, prefetch_stream));
-
-    CUDA_CHECK(cudaEventRecord(prefetch_started, prefetch_stream));
-
-    // the wait event
-    // tell the compute stream to wait until the prefetch stream reaches the marker
-    // because cudaMeMPrefetchAsync is nonblocking, the kernel can start
-    // while the hardware is still streaming pages in the background
-    // compute_Stream is the stream that will pause
-    // prefetch_started is the event the stream is waiting for 
-    CUDA_CHECK(cudaStreamWaitEvent(compute_stream, prefetch_started, 0));
-
-    tiled_gemm_sm<<<grid, block, 0, compute_stream>>>(A, B, C, M, N, K);    
-
-    CUDA_CHECK(cudaGetLastError());
-
-    CUDA_CHECK(cudaEventRecord(stop, compute_stream));
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    CUDA_CHECK(cudaEventElapsedTime(&elapsed, start, stop));
-    printf("M3 (Overlapped Prefetch) Kernel Time: %f ms\n", elapsed);
+    CUDA_CHECK(cudaProfilerStop());
 
     // cleanup 
     CUDA_CHECK(cudaFree(A));
@@ -264,10 +202,8 @@ int main() {
 
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
-    CUDA_CHECK(cudaEventDestroy(prefetch_started));
-
+    
     CUDA_CHECK(cudaStreamDestroy(compute_stream)); 
-    CUDA_CHECK(cudaStreamDestroy(prefetch_stream));
-
+   
     return 0;
 }
