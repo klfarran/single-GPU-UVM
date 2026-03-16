@@ -56,9 +56,11 @@ for b in "${BENCHES[@]}"; do
 
         echo "CPU Page Faults: $cpu_pfs"
         echo "GPU Page Faults: $gpu_pfs"
+        echo ""
     
         echo "HtoD migration size: $htod_mb MB"
         echo "DtoH migration size: $dtoh_mb MB"
+        echo ""
 
         kernel_time=$(echo "$run_output" | grep "Kernel Time" | awk '{print $(NF-1)}')
 

@@ -165,7 +165,6 @@ int main() {
     reset_system_state(dummy_buffer, L2_SIZE, A, B, C, sizeA, sizeB, sizeC); 
 
     // begin microbenchmark experiments 
-    CUDA_CHECK(cudaProfilerStart());
     cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
@@ -186,6 +185,7 @@ int main() {
     
     nvtxRangePushA("M3: Overlapped Prefetch");
     CUDA_CHECK(cudaEventRecord(start, compute_stream));
+    CUDA_CHECK(cudaProfilerStart());
 
     // launch prefetches on the nonblocking prefetch stream 
     // question- do we need to time and then substract the prefetch overhead   
